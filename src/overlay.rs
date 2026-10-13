@@ -1,5 +1,7 @@
 //! The arrow / ring / label and the "working on the next step" badge. A small click-through,
 //! always-on-top, colour-keyed window that is resized to fit what it draws and hidden when idle.
+//! A second tiny window, the cursor buddy, rides next to the mouse: a compass needle towards the
+//! target while it's far away, a spinner while the agent works. Eyes are where the mouse is.
 
 use crate::index::Index;
 use crate::win::{self, Rect};
@@ -77,6 +79,10 @@ impl Shared {
 enum Scene {
     Arrow { tail: (i32, i32), base: (i32, i32), tip: (i32, i32), ring: (i32, i32, i32), ring_col: u32, label: Option<(RECT, String)> },
     Badge { panel: RECT, text: RECT, msg: String, col: u32, dot: Option<RECT> },
+    /// buddy: needle from the centre towards the target (unit vector)
+    Compass { dir: (f64, f64) },
+    /// buddy: ring of dots, `lit` is the bright one
+    Spinner { col: u32, lit: usize },
 }
 
 struct Frame {
@@ -87,6 +93,7 @@ struct Frame {
 
 thread_local! {
     static FRAME: RefCell<Option<Frame>> = const { RefCell::new(None) };
+    static BUDDY: RefCell<Option<Frame>> = const { RefCell::new(None) };
     static FONTS: RefCell<(HFONT, HFONT)> = const { RefCell::new((HFONT(std::ptr::null_mut()), HFONT(std::ptr::null_mut()))) };
 }
 
@@ -94,6 +101,10 @@ const WM_TRAY: u32 = WM_APP + 1;
 static TRAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 static TASKBAR_CREATED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static SHARED: std::sync::OnceLock<&'static Shared> = std::sync::OnceLock::new();
+static BUDDY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+const BUDDY_SIZE: i32 = 44;
+/// the needle hides once the mouse is this close to the target (the big arrow is in view)
+const NEAR: i32 = 220;
 
 /// Add/update/remove the notification-area icon (embedded resource 1) with a status tooltip.
 fn tray(op: NOTIFY_ICON_MESSAGE, tip: &str) {
@@ -136,34 +147,38 @@ pub fn run(shared: &'static Shared, index: &'static Index) {
             lpszClassName: PCWSTR(cls.as_ptr()),
             ..Default::default()
         });
-        let Ok(hwnd) = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
-            PCWSTR(cls.as_ptr()),
-            PCWSTR::null(),
-            WS_POPUP,
-            0,
-            0,
-            1,
-            1,
-            None,
-            None,
-            Some(inst.into()),
-            None,
-        ) else {
-            return;
+        let make = || {
+            let h = CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+                PCWSTR(cls.as_ptr()),
+                PCWSTR::null(),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                Some(inst.into()),
+                None,
+            )
+            .ok()?;
+            _ = SetLayeredWindowAttributes(h, COLORREF(KEY), 0, LWA_COLORKEY);
+            Some(h)
         };
-        _ = SetLayeredWindowAttributes(hwnd, COLORREF(KEY), 0, LWA_COLORKEY);
+        let (Some(hwnd), Some(buddy)) = (make(), make()) else { return };
+        BUDDY_HWND.store(buddy.0 as isize, std::sync::atomic::Ordering::Relaxed);
         TRAY_HWND.store(hwnd.0 as isize, std::sync::atomic::Ordering::Relaxed);
         TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), std::sync::atomic::Ordering::Relaxed);
         tray(NIM_ADD, READY);
         let font = |h: i32| CreateFontW(h, 0, 0, 0, 700, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, 0, PCWSTR(win::wide("Segoe UI").as_ptr()));
         FONTS.with(|f| *f.borrow_mut() = (font(-26), font(-22)));
         SetTimer(Some(hwnd), 1, 15, None);
-        let mut st = Tick { was: [false; 2], shown: false, tip: READY };
+        let mut st = Tick { was: [false; 2], shown: [false; 2], tip: READY };
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             if msg.message == WM_TIMER {
-                st.tick(hwnd, shared, index);
+                st.tick([hwnd, buddy], shared, index);
             }
             DispatchMessageW(&msg);
         }
@@ -174,12 +189,12 @@ const READY: &str = "Wayfinder: ready";
 
 struct Tick {
     was: [bool; 2],
-    shown: bool,
+    shown: [bool; 2],
     tip: &'static str,
 }
 
 impl Tick {
-    fn tick(&mut self, hwnd: HWND, shared: &Shared, index: &Index) {
+    fn tick(&mut self, wins: [HWND; 2], shared: &Shared, index: &Index) {
         // clicks: feed the route learner, and detect a hit on the target ring
         for (i, (vk, button)) in [(0x01, "left"), (0x02, "right")].into_iter().enumerate() {
             let down = unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000 != 0;
@@ -214,27 +229,52 @@ impl Tick {
                 self.tip = tip;
                 tray(NIM_MODIFY, tip);
             }
-            layout(&m)
+            [layout(&m), buddy_layout(&m)]
         };
-        unsafe {
-            match frame {
-                None => {
-                    if self.shown {
-                        // hide outright: an emptied colour-keyed window can leave unrepainted slivers
-                        _ = ShowWindow(hwnd, SW_HIDE);
-                        self.shown = false;
+        for (i, fr) in frame.into_iter().enumerate() {
+            let hwnd = wins[i];
+            let slot = if i == 0 { &FRAME } else { &BUDDY };
+            unsafe {
+                match fr {
+                    None => {
+                        if self.shown[i] {
+                            // hide outright: an emptied colour-keyed window can leave unrepainted slivers
+                            _ = ShowWindow(hwnd, SW_HIDE);
+                            self.shown[i] = false;
+                        }
+                        slot.with(|f| *f.borrow_mut() = None);
                     }
-                    FRAME.with(|f| *f.borrow_mut() = None);
-                }
-                Some(fr) => {
-                    _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), fr.origin.0, fr.origin.1, fr.size.0, fr.size.1, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-                    self.shown = true;
-                    FRAME.with(|f| *f.borrow_mut() = Some(fr));
-                    win::invalidate(hwnd);
+                    Some(fr) => {
+                        _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), fr.origin.0, fr.origin.1, fr.size.0, fr.size.1, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                        self.shown[i] = true;
+                        slot.with(|f| *f.borrow_mut() = Some(fr));
+                        win::invalidate(hwnd);
+                    }
                 }
             }
         }
     }
+}
+
+/// The cursor buddy: just below-right of the mouse pointer, never under it.
+fn buddy_layout(m: &Mode) -> Option<Frame> {
+    let (cx, cy) = win::cursor();
+    let scene = match m {
+        Mode::Target { x, y, done: None, .. } => {
+            let (dx, dy) = ((x - cx) as f64, (y - cy) as f64);
+            let d = (dx * dx + dy * dy).sqrt();
+            if d < NEAR as f64 {
+                return None;
+            }
+            Scene::Compass { dir: (dx / d, dy / d) }
+        }
+        Mode::Busy { since, .. } => {
+            let t = START.get_or_init(Instant::now).elapsed().as_millis() as usize;
+            Scene::Spinner { col: if since.elapsed() > BUSY_STALE { AMBER } else { GREEN }, lit: t / 90 % 8 }
+        }
+        _ => return None,
+    };
+    Some(Frame { origin: (cx + 18, cy + 22), size: (BUDDY_SIZE, BUDDY_SIZE), scene })
 }
 
 fn layout(m: &Mode) -> Option<Frame> {
@@ -329,7 +369,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         if msg == WM_PAINT {
             let mut ps = PAINTSTRUCT::default();
             let dc = BeginPaint(hwnd, &mut ps);
-            FRAME.with(|f| {
+            let slot = if hwnd.0 as isize == BUDDY_HWND.load(std::sync::atomic::Ordering::Relaxed) { &BUDDY } else { &FRAME };
+            slot.with(|f| {
                 if let Some(fr) = &*f.borrow() {
                     paint(dc, fr);
                 }
@@ -440,6 +481,38 @@ unsafe fn paint(dc: HDC, fr: &Frame) {
                     _ = DeleteObject(br.into());
                 }
                 draw_text(mem, msg, *text, 1, DT_SINGLELINE | DT_VCENTER);
+            }
+            Scene::Compass { dir } => {
+                let c = BUDDY_SIZE / 2;
+                let br = CreateSolidBrush(COLORREF(PANEL));
+                with(mem, pen(WHITE, 2), br.into(), || _ = Ellipse(mem, 2, 2, BUDDY_SIZE - 2, BUDDY_SIZE - 2));
+                _ = DeleteObject(br.into());
+                let at = |along: f64, side: f64| POINT {
+                    x: c + (dir.0 * along - dir.1 * side) as i32,
+                    y: c + (dir.1 * along + dir.0 * side) as i32,
+                };
+                let red = CreateSolidBrush(COLORREF(RED));
+                with(mem, pen(RED, 1), red.into(), || _ = Polygon(mem, &[at(16.0, 0.0), at(-8.0, 9.0), at(-3.0, 0.0), at(-8.0, -9.0)]));
+                _ = DeleteObject(red.into());
+            }
+            Scene::Spinner { col, lit } => {
+                let c = BUDDY_SIZE as f64 / 2.0;
+                let br = CreateSolidBrush(COLORREF(PANEL));
+                with(mem, pen(*col, 2), br.into(), || _ = Ellipse(mem, 2, 2, BUDDY_SIZE - 2, BUDDY_SIZE - 2));
+                _ = DeleteObject(br.into());
+                for i in 0..8 {
+                    let a = i as f64 * std::f64::consts::FRAC_PI_4;
+                    let (x, y) = ((c + 12.0 * a.cos()) as i32, (c + 12.0 * a.sin()) as i32);
+                    // trail: the lit dot full colour, the two behind it dimmer, the rest faint
+                    let age = (*lit + 8 - i) % 8;
+                    let shade = |v: u32| match age { 0 => v, 1 | 2 => v / 2, _ => v / 5 };
+                    let rgb = |sh: u32| shade((*col >> sh) & 0xff) << sh;
+                    let dot_col = rgb(0) | rgb(8) | rgb(16);
+                    let r = if age == 0 { 4 } else { 3 };
+                    let b = CreateSolidBrush(COLORREF(dot_col));
+                    with(mem, pen(dot_col, 1), b.into(), || _ = Ellipse(mem, x - r, y - r, x + r, y + r));
+                    _ = DeleteObject(b.into());
+                }
             }
         }
         _ = BitBlt(dc, 0, 0, fr.size.0, fr.size.1, Some(mem), 0, 0, SRCCOPY);
