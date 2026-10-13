@@ -123,6 +123,11 @@ impl Server {
             return Response::json(401, r#"{"error":"bad token"}"#.into());
         }
         let body = json::parse_object(&r.body).unwrap_or_default();
+        // a blank name would match everything and point at whatever came first
+        let blank = |k: &str| body.get(k).and_then(|v| v.str()).is_none_or(|v| v.trim().is_empty());
+        if (r.path == "/at" && blank("q")) || (r.path == "/find" && http::query_param(&r.query, "q").is_none_or(|v| v.trim().is_empty())) {
+            return Response::json(400, r#"{"error":"need a name to look for"}"#.into());
+        }
         let s = |k: &str| body.get(k).and_then(|v| v.str()).unwrap_or("").to_string();
         let n = |k: &str| body.get(k).and_then(|v| v.num());
         let ok = || Response::json(200, r#"{"ok":true}"#.into());

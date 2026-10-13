@@ -104,7 +104,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn rows(file: &str) -> Vec<Vec<String>> {
     let s = std::fs::read_to_string(win::data_file(file)).unwrap_or_default();
-    s.lines().map(|l| l.split('\t').map(String::from).collect()).collect()
+    // tolerate files re-saved by Windows tools: UTF-8 BOM, CRLF
+    s.trim_start_matches('\u{feff}').lines().map(|l| l.trim_end_matches('\r').split('\t').map(String::from).collect()).collect()
 }
 
 fn save(file: &str, body: String) {
