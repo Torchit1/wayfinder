@@ -12,7 +12,8 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::PCWSTR;
+use windows::Win32::UI::Shell::*;
+use windows::core::{PCWSTR, w};
 
 const KEY: u32 = 0x010101; // transparent colour key
 const RED: u32 = 0x2d2dff; // COLORREF is 0x00BBGGRR
@@ -89,7 +90,43 @@ thread_local! {
     static FONTS: RefCell<(HFONT, HFONT)> = const { RefCell::new((HFONT(std::ptr::null_mut()), HFONT(std::ptr::null_mut()))) };
 }
 
+const WM_TRAY: u32 = WM_APP + 1;
+static TRAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static TASKBAR_CREATED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static SHARED: std::sync::OnceLock<&'static Shared> = std::sync::OnceLock::new();
+
+/// Add/update/remove the notification-area icon (embedded resource 1) with a status tooltip.
+fn tray(op: NOTIFY_ICON_MESSAGE, tip: &str) {
+    let hwnd = HWND(TRAY_HWND.load(std::sync::atomic::Ordering::Relaxed) as *mut _);
+    if hwnd.0.is_null() {
+        return;
+    }
+    unsafe {
+        let inst = GetModuleHandleW(None).unwrap_or_default();
+        let (w, h) = (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+        let icon = LoadImageW(Some(inst.into()), PCWSTR(1 as *const u16), IMAGE_ICON, w, h, LR_SHARED).unwrap_or_default();
+        let mut nid = NOTIFYICONDATAW {
+            cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: hwnd,
+            uID: 1,
+            uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
+            uCallbackMessage: WM_TRAY,
+            hIcon: HICON(icon.0),
+            ..Default::default()
+        };
+        for (d, c) in nid.szTip.iter_mut().zip(tip.encode_utf16().take(127)) {
+            *d = c;
+        }
+        _ = Shell_NotifyIconW(op, &nid);
+    }
+}
+
+pub fn remove_tray() {
+    tray(NIM_DELETE, "");
+}
+
 pub fn run(shared: &'static Shared, index: &'static Index) {
+    let _ = SHARED.set(shared);
     unsafe {
         let inst = GetModuleHandleW(None).unwrap_or_default();
         let cls = win::wide("WayfinderOverlay");
@@ -116,10 +153,13 @@ pub fn run(shared: &'static Shared, index: &'static Index) {
             return;
         };
         _ = SetLayeredWindowAttributes(hwnd, COLORREF(KEY), 0, LWA_COLORKEY);
+        TRAY_HWND.store(hwnd.0 as isize, std::sync::atomic::Ordering::Relaxed);
+        TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), std::sync::atomic::Ordering::Relaxed);
+        tray(NIM_ADD, READY);
         let font = |h: i32| CreateFontW(h, 0, 0, 0, 700, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, 0, PCWSTR(win::wide("Segoe UI").as_ptr()));
         FONTS.with(|f| *f.borrow_mut() = (font(-26), font(-22)));
         SetTimer(Some(hwnd), 1, 15, None);
-        let mut st = Tick { was: [false; 2], shown: false };
+        let mut st = Tick { was: [false; 2], shown: false, tip: READY };
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             if msg.message == WM_TIMER {
@@ -130,9 +170,12 @@ pub fn run(shared: &'static Shared, index: &'static Index) {
     }
 }
 
+const READY: &str = "Wayfinder: ready";
+
 struct Tick {
     was: [bool; 2],
     shown: bool,
+    tip: &'static str,
 }
 
 impl Tick {
@@ -161,6 +204,15 @@ impl Tick {
                 if t.elapsed() > FLASH {
                     *m = Mode::Busy { msg: BUSY_MSG.into(), since: Instant::now() };
                 }
+            }
+            let tip = match &*m {
+                Mode::Hidden => READY,
+                Mode::Target { .. } => "Wayfinder: pointing - click inside the ring",
+                Mode::Busy { .. } => "Wayfinder: Claude is working out the next step",
+            };
+            if tip != self.tip {
+                self.tip = tip;
+                tray(NIM_MODIFY, tip);
             }
             layout(&m)
         };
@@ -287,6 +339,28 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         if msg == WM_ERASEBKGND {
             return LRESULT(1);
+        }
+        if msg == TASKBAR_CREATED.load(std::sync::atomic::Ordering::Relaxed) && msg != 0 {
+            tray(NIM_ADD, READY); // Explorer restarted
+        }
+        if msg == WM_TRAY && matches!(lp.0 as u32 & 0xffff, WM_RBUTTONUP | WM_LBUTTONUP) {
+            let menu = CreatePopupMenu().unwrap_or_default();
+            _ = AppendMenuW(menu, MF_STRING, 1, w!("Hide arrow"));
+            _ = AppendMenuW(menu, MF_STRING, 2, w!("Quit Wayfinder"));
+            let (x, y) = win::cursor();
+            _ = SetForegroundWindow(hwnd);
+            let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y, None, hwnd, None).0;
+            _ = DestroyMenu(menu);
+            if let Some(shared) = SHARED.get() {
+                if cmd == 1 {
+                    *shared.mode.lock().unwrap_or_else(|e| e.into_inner()) = Mode::Hidden;
+                }
+            }
+            if cmd == 2 {
+                remove_tray();
+                std::process::exit(0);
+            }
+            return LRESULT(0);
         }
         DefWindowProcW(hwnd, msg, wp, lp)
     }

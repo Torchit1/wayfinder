@@ -1,4 +1,6 @@
-# Wayfinder
+<p align="center"><img src="assets/logo.png" width="128" alt="Wayfinder logo: a mouse cursor on a red bullseye"></p>
+
+<h1 align="center">Wayfinder</h1>
 
 **Let an AI agent point at things on your Windows screen instead of clicking them.**
 
@@ -6,7 +8,7 @@ You ask your agent (Claude Code, Codex, anything that can run a command) how to 
 
 It was built as an **accessibility tool**: for people who find screens hard to navigate and want guidance, not an agent taking over their mouse.
 
-- **Single 256 KB `.exe`**, no runtime, no dependencies beyond Windows itself.
+- **Single `.exe` under 256 KB**, with a tray icon (right-click: hide arrow / quit), no runtime, no dependencies beyond Windows itself.
 - **Finds controls by name, not by screenshot.** It reads the same accessibility tree screen readers use (UI Automation), so it works on sites and apps that block screen capture. Lookups take well under a millisecond from a live in-memory index.
 - **Never clicks or types for you.** It only draws, watches for your click inside the ring, and can put text on your clipboard so you can right-click → Paste instead of typing.
 - **Learns how to reach hidden things.** When a click opens a menu, it remembers that the menu's items are reached through that click. Next time it points at the first step.
