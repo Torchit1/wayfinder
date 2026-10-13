@@ -1,6 +1,5 @@
 //! Small Win32 helpers: cursor, monitors, virtual screen, clipboard, data dir.
 
-use std::path::PathBuf;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::DataExchange::*;
@@ -72,10 +71,14 @@ pub fn set_clipboard(text: &str) -> bool {
     }
 }
 
-/// The exe's own folder holds token.txt and learned.tsv: one predictable place (portable-app
-/// style), the same for the server and every client whatever environment launched them.
-pub fn data_dir() -> PathBuf {
-    std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("."))
+/// `name` in the exe's own folder, which holds token.txt, learned.tsv and marks.tsv: one
+/// predictable place (portable-app style) whatever environment launched us.
+pub fn data_file(name: &str) -> String {
+    let mut buf = [0u16; 1024];
+    let n = unsafe { windows::Win32::System::LibraryLoader::GetModuleFileNameW(None, &mut buf) } as usize;
+    let exe = String::from_utf16_lossy(&buf[..n]);
+    let dir = exe.rsplit_once('\\').map_or(".", |(d, _)| d);
+    format!("{dir}\\{name}")
 }
 
 pub fn invalidate(hwnd: HWND) {

@@ -1,7 +1,7 @@
 //! Minimal HTTP/1.1: one request per connection, Content-Length bodies only.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{IpAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
 
 pub struct Request {
     pub method: String,
@@ -9,7 +9,8 @@ pub struct Request {
     pub query: String,
     pub auth: String,
     pub body: String,
-    pub peer: IpAddr,
+    /// IPv4 peer as a u32 (0 for anything else)
+    pub peer: u32,
 }
 
 pub struct Response {
@@ -25,8 +26,12 @@ impl Response {
     }
 }
 
-pub fn serve(addr: &str, handler: impl Fn(Request) -> Response + Send + Sync + 'static) -> std::io::Result<()> {
-    let listener = TcpListener::bind(addr)?;
+/// Listen on `ip:port` (0 = all interfaces). Bind first so the caller learns about a busy port.
+pub fn bind(ip: u32, port: u16) -> std::io::Result<TcpListener> {
+    TcpListener::bind(SocketAddrV4::new(Ipv4Addr::from(ip), port))
+}
+
+pub fn serve(listener: TcpListener, handler: impl Fn(Request) -> Response + Send + Sync + 'static) -> std::io::Result<()> {
     let handler = std::sync::Arc::new(handler);
     for stream in listener.incoming().flatten() {
         let h = handler.clone();
@@ -38,7 +43,10 @@ pub fn serve(addr: &str, handler: impl Fn(Request) -> Response + Send + Sync + '
 }
 
 fn handle(mut stream: TcpStream, handler: &dyn Fn(Request) -> Response) -> std::io::Result<()> {
-    let peer = stream.peer_addr()?.ip();
+    let peer = match stream.peer_addr()?.ip() {
+        IpAddr::V4(a) => u32::from(a),
+        IpAddr::V6(_) => 0,
+    };
     stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
     let mut r = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
@@ -84,6 +92,20 @@ fn handle(mut stream: TcpStream, handler: &dyn Fn(Request) -> Response) -> std::
     head.push_str("\r\n");
     stream.write_all(head.as_bytes())?;
     stream.write_all(&resp.body)
+}
+
+/// "a.b.c.d" -> u32 (None if malformed). Hand-rolled to keep std's address parser out.
+pub fn ipv4(s: &str) -> Option<u32> {
+    let mut parts = s.trim().split('.');
+    let mut v = 0u32;
+    for _ in 0..4 {
+        let n = crate::json::int(parts.next()?)?;
+        if !(0..=255).contains(&n) {
+            return None;
+        }
+        v = v << 8 | n as u32;
+    }
+    parts.next().is_none().then_some(v)
 }
 
 /// Query-string value (percent-decoded, '+' as space).
@@ -135,7 +157,7 @@ pub fn request(
     body: &str,
     timeout_s: u64,
 ) -> std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)> {
-    let mut s = TcpStream::connect(("127.0.0.1", port))?;
+    let mut s = TcpStream::connect(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))?;
     s.set_read_timeout(Some(std::time::Duration::from_secs(timeout_s)))?;
     write!(
         s,

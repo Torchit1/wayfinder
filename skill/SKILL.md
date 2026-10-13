@@ -15,7 +15,7 @@ Requires `wayfinder serve` running on the user's PC (see README). It is an acces
    - Not sure of the name? `wayfinder find "part of name"` lists candidates. Try a few likely words.
 2. **Wait for the click, in the background** (it can take minutes): `wayfinder wait 600`. Exit 0 = clicked inside the ring. The overlay then shows "working out the next step..." automatically.
 3. Point at the next step. Repeat. `wayfinder off` when finished.
-4. **Fallback when `at`/`find` can't see it** (canvases, games, video, custom-drawn UIs): `wayfinder shot shot.png`, read the image, then `wayfinder point X Y "label"` in that image's pixels. The shot marks the mouse with a magenta crosshair and reports which monitor it's on.
+4. **Fallback when `at`/`find` can't see it** (canvases, games, video, custom-drawn UIs): `wayfinder shot shot.png`, read the image, then `wayfinder point X Y "label"` in that image's pixels. The shot marks the mouse with a magenta crosshair and reports which monitor it's on. Add `--remember "name"` so next time `wayfinder at "name"` finds it with no screenshot (the JSON says `"remembered":true`).
 
 ## Rules
 

@@ -23,7 +23,8 @@ const USAGE: &str = "wayfinder: point at things on screen for a person to click 
   wayfinder at \"name\" [\"label\"]       arrow on a control found by name (no screenshot); learned route if hidden
   wayfinder find \"name\"               list visible controls whose name contains this
   wayfinder shot [file.png] [--width N]  screenshot of the whole desktop with the mouse marked
-  wayfinder point X Y [\"label\"] [--raw] arrow at X,Y in the last shot's pixels (--raw: screen pixels)
+  wayfinder point X Y [\"label\"] [--raw] [--remember \"name\"]  arrow at X,Y in the last shot's pixels;
+                                    --remember: learn this spot so `at \"name\"` finds it next time
   wayfinder wait [seconds]            block until the person clicks inside the ring (exit 0) or timeout (1)
   wayfinder busy [\"message\"]          'working out the next step' badge
   wayfinder clip \"text\"               put text on the clipboard so they can right-click > Paste
@@ -49,7 +50,7 @@ fn main() {
 }
 
 fn token() -> String {
-    let path = win::data_dir().join("token.txt");
+    let path = win::data_file("token.txt");
     if let Ok(t) = std::fs::read_to_string(&path) {
         if !t.trim().is_empty() {
             return t.trim().to_string();
@@ -75,7 +76,7 @@ struct Server {
     shared: &'static Shared,
     index: &'static Index,
     token: String,
-    allow: Vec<String>,
+    allow: Vec<u32>,
     /// last /shot mapping: (scale, origin) so /point can take shot-pixel coordinates
     shot_map: Mutex<Option<(f64, (i32, i32))>>,
 }
@@ -83,13 +84,13 @@ struct Server {
 fn serve(args: &[String]) -> i32 {
     let mut port = port();
     let mut lan = false;
-    let mut allow = vec!["127.0.0.1".to_string()];
+    let mut allow = vec![0x7f00_0001u32]; // 127.0.0.1
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--port" => port = it.next().and_then(|p| json::int(p)).map_or(port, |p| p as u16),
             "--lan" => lan = true,
-            "--allow" => allow.extend(it.next().map(|s| s.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>()).unwrap_or_default()),
+            "--allow" => allow.extend(it.next().map_or(Vec::new(), |s| s.split(',').filter_map(http::ipv4).collect())),
             _ => {}
         }
     }
@@ -99,14 +100,15 @@ fn serve(args: &[String]) -> i32 {
     let shared: &'static Shared = Box::leak(Box::new(Shared::new()));
     let srv: &'static Server =
         Box::leak(Box::new(Server { shared, index, token: token(), allow, shot_map: Mutex::new(None) }));
-    let addr = format!("{}:{port}", if lan { "0.0.0.0" } else { "127.0.0.1" });
-    let bound = std::net::TcpListener::bind(&addr).map(drop);
-    if let Err(e) = bound {
-        eprintln!("wayfinder: can't listen on {addr}: {e} (already running?)");
-        return 1;
-    }
+    let listener = match http::bind(if lan { 0 } else { 0x7f00_0001 }, port) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("wayfinder: can't listen on port {port}: {e} (already running?)");
+            return 1;
+        }
+    };
     std::thread::spawn(move || {
-        let _ = http::serve(&addr, move |r| srv.handle(r));
+        let _ = http::serve(listener, move |r| srv.handle(r));
     });
     overlay::run(shared, index);
     0
@@ -114,7 +116,7 @@ fn serve(args: &[String]) -> i32 {
 
 impl Server {
     fn handle(&self, r: Request) -> Response {
-        if !self.allow.iter().any(|a| *a == r.peer.to_string()) {
+        if !self.allow.contains(&r.peer) {
             return Response::json(403, r#"{"error":"forbidden"}"#.into());
         }
         if r.auth != format!("Bearer {}", self.token) {
@@ -149,7 +151,9 @@ impl Server {
                     ((x as f64 * scale) as i32 + ox, (y as f64 * scale) as i32 + oy)
                 };
                 self.shared.set_target(x, y, &s("label"));
-                ok()
+                let name = s("name");
+                let kept = !name.is_empty() && self.index.remember(&name, x, y);
+                Response::json(200, format!(r#"{{"ok":true,"remembered":{kept}}}"#))
             }
             ("GET", "/shot") => {
                 let w = http::query_param(&r.query, "width").and_then(|w| json::int(&w)).unwrap_or(2560) as u32;
@@ -225,8 +229,14 @@ impl Server {
             return Response::json(200, format!(r#"{{"pointed":{},"step":1,"of":1}}"#, match_json(&m)));
         }
         let Some(steps) = self.index.route(query, 3) else {
-            return Response::json(404, format!(r#"{{"error":{}}}"#, q(&format!("'{query}' isn't on screen and no learned route to it"))));
+            if let Some((name, (x, y))) = self.index.recall(query) {
+                let label = if label.is_empty() { format!("Click {name}") } else { label.into() };
+                self.shared.set_target(x, y, &label);
+                return Response::json(200, format!(r#"{{"pointed":{{"name":{},"center":[{x},{y}]}},"remembered":true}}"#, q(&name)));
+            }
+            return Response::json(404, format!(r#"{{"error":{}}}"#, q(&format!("'{query}' isn't on screen, and no learned route or remembered spot"))));
         };
+        self.index.expect(&steps[0].0, &steps[steps.len() - 1].0);
         let Some(first) = self.index.lookup(&steps[0].0, 1).into_iter().next() else {
             return Response::json(404, r#"{"error":"route start not on screen"}"#.into());
         };
@@ -328,12 +338,19 @@ fn client(cmd: &str, args: &[String]) -> i32 {
         }
         "point" => {
             let (Some(x), Some(y)) = (json::int(arg(0)), json::int(arg(1))) else {
-                eprintln!("usage: wayfinder point X Y [label] [--raw]");
+                eprintln!("usage: wayfinder point X Y [label] [--raw] [--remember name]");
                 return 2;
             };
-            let raw = args.iter().any(|a| a == "--raw");
-            let label = args.get(2).filter(|a| *a != "--raw").map(String::as_str).unwrap_or("");
-            call("POST", "/point", &format!(r#"{{"x":{x},"y":{y},"label":{},"raw":{raw}}}"#, q(label)), 5)
+            let (mut raw, mut label, mut name) = (false, "", "");
+            let mut it = args[2..].iter();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--raw" => raw = true,
+                    "--remember" => name = it.next().map_or("", String::as_str),
+                    other => label = other,
+                }
+            }
+            call("POST", "/point", &format!(r#"{{"x":{x},"y":{y},"label":{},"raw":{raw},"name":{}}}"#, q(label), q(name)), 5)
         }
         _ => {
             eprintln!("unknown command '{cmd}'\n\n{USAGE}");

@@ -2,7 +2,7 @@
 # Drive `wayfinder serve --lan` from another machine (e.g. an agent in a container).
 #   WAYFINDER_HOST=http://192.168.1.10:8790  WAYFINDER_TOKEN=<contents of token.txt next to wayfinder.exe>
 # Usage mirrors the Windows CLI:
-#   wayfinder.sh at "name" ["label"] | find "name" | shot [file.png] | point X Y ["label"]
+#   wayfinder.sh at "name" ["label"] | find "name" | shot [file.png] | point X Y "label" [--remember "name"]
 #   wayfinder.sh wait [seconds] | busy ["msg"] | clip "text" | off | health
 HOST=${WAYFINDER_HOST:?set WAYFINDER_HOST, e.g. http://192.168.1.10:8790}
 TOKEN=${WAYFINDER_TOKEN:?set WAYFINDER_TOKEN}
@@ -19,7 +19,8 @@ case "$1" in
             tolower($1)=="x-cursor-monitor" {m=$2} tolower($1)=="x-monitor-rect" {r=$2}
             END {print f " " s; print "mouse at " c " on the " m " monitor (shot rect " r ")"}'
           rm -f "$f.headers"; exit 0 ;;
-  point)  "${CURL[@]}" -X POST -d "{\"x\":$2,\"y\":$3,\"label\":$(js "${4:-}")}" "$HOST/point" ;;
+  point)  name=""; [ "$5" = "--remember" ] && name=$6
+          "${CURL[@]}" -X POST -d "{\"x\":$2,\"y\":$3,\"label\":$(js "${4:-}"),\"name\":$(js "$name")}" "$HOST/point" ;;
   wait)   "${CURL[@]}" --max-time 960 "$HOST/wait?timeout=${2:-600}" ;;
   busy)   "${CURL[@]}" -X POST -d "{\"msg\":$(js "${2:-}")}" "$HOST/busy" ;;
   clip)   "${CURL[@]}" -X POST -d "{\"text\":$(js "$2")}" "$HOST/clip" ;;
