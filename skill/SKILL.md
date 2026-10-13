@@ -19,6 +19,7 @@ Requires `wayfinder serve` running on the user's PC (see README). It is an acces
 
 ## Rules
 
+- If clicking is hard for them: every arrow's label says "Press F9 to click". F9 is their key press, not yours; you can't click. Mark right-click steps with `--right` (learned routes do it automatically) so F9 right-clicks.
 - Never make them type: `wayfinder clip "text"`, then point at the box with "Right-click here -> Paste".
 - Keep labels short ("Step 3: click Safety Filters") and say the same step in chat.
 - When they're waiting on you and no arrow is up, run `wayfinder busy` so they know you're working even if your window is covered.

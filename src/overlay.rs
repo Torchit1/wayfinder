@@ -2,6 +2,8 @@
 //! always-on-top, colour-keyed window that is resized to fit what it draws and hidden when idle.
 //! A second tiny window, the cursor buddy, rides next to the mouse: a compass needle towards the
 //! target while it's far away, a spinner while the agent works. Eyes are where the mouse is.
+//! Click on confirm: while an arrow is up, F9 (the person's own key press, never the API) moves the
+//! mouse to the target and clicks it, right-clicking when the step needs it; Shift+F9 right-clicks.
 
 use crate::index::Index;
 use crate::win::{self, Rect};
@@ -12,7 +14,7 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::UI::Shell::*;
 use windows::core::{PCWSTR, w};
@@ -30,7 +32,7 @@ pub const BUSY_MSG: &str = "Claude is working out the next step";
 
 pub enum Mode {
     Hidden,
-    Target { x: i32, y: i32, label: String, id: u64, done: Option<Instant> },
+    Target { x: i32, y: i32, label: String, id: u64, done: Option<Instant>, right: bool },
     Busy { msg: String, since: Instant },
 }
 
@@ -52,14 +54,14 @@ impl Shared {
         Shared { mode: Mutex::new(Mode::Hidden), hit: Mutex::new(None), hit_cv: Condvar::new(), next_id: Mutex::new(0) }
     }
 
-    pub fn set_target(&self, x: i32, y: i32, label: &str) -> u64 {
+    pub fn set_target(&self, x: i32, y: i32, label: &str, right: bool) -> u64 {
         let id = {
             let mut n = self.next_id.lock().unwrap_or_else(|e| e.into_inner());
             *n += 1;
             *n
         };
         *self.hit.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        *self.mode.lock().unwrap_or_else(|e| e.into_inner()) = Mode::Target { x, y, label: label.into(), id, done: None };
+        *self.mode.lock().unwrap_or_else(|e| e.into_inner()) = Mode::Target { x, y, label: label.into(), id, done: None, right };
         id
     }
 
@@ -174,11 +176,14 @@ pub fn run(shared: &'static Shared, index: &'static Index) {
         let font = |h: i32| CreateFontW(h, 0, 0, 0, 700, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, 0, PCWSTR(win::wide("Segoe UI").as_ptr()));
         FONTS.with(|f| *f.borrow_mut() = (font(-26), font(-22)));
         SetTimer(Some(hwnd), 1, 15, None);
-        let mut st = Tick { was: [false; 2], shown: [false; 2], tip: READY };
+        let mut st = Tick { was: [false; 2], shown: [false; 2], tip: READY, keys: false };
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             if msg.message == WM_TIMER {
                 st.tick([hwnd, buddy], shared, index);
+            }
+            if msg.message == WM_HOTKEY {
+                click_target(shared, index, msg.wParam.0 == 2);
             }
             DispatchMessageW(&msg);
         }
@@ -191,6 +196,35 @@ struct Tick {
     was: [bool; 2],
     shown: [bool; 2],
     tip: &'static str,
+    /// F9 / Shift+F9 registered (only while an arrow is up, so F9 works normally otherwise)
+    keys: bool,
+}
+
+const VK_F9: u32 = 0x78;
+
+/// The person pressed F9: move to the target and click it (right-click if the step needs it, or
+/// on Shift+F9). Counts as their click: feeds route learning and completes the step.
+fn click_target(shared: &Shared, index: &Index, force_right: bool) {
+    let (x, y, right) = {
+        let m = shared.mode.lock().unwrap_or_else(|e| e.into_inner());
+        let Mode::Target { x, y, right, done: None, .. } = &*m else { return };
+        (*x, *y, *right || force_right)
+    };
+    index.on_click(x, y, if right { "right" } else { "left" });
+    let (down, up) = if right { (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP) } else { (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP) };
+    let ev = |flags| INPUT { r#type: INPUT_MOUSE, Anonymous: INPUT_0 { mi: MOUSEINPUT { dwFlags: flags, ..Default::default() } } };
+    unsafe {
+        _ = SetCursorPos(x, y);
+        SendInput(&[ev(down), ev(up)], size_of::<INPUT>() as i32);
+    }
+    let mut m = shared.mode.lock().unwrap_or_else(|e| e.into_inner());
+    if let Mode::Target { id, done, .. } = &mut *m {
+        if done.is_none() {
+            *done = Some(Instant::now());
+            *shared.hit.lock().unwrap_or_else(|e| e.into_inner()) = Some(Hit { id: *id, x, y });
+            shared.hit_cv.notify_all();
+        }
+    }
 }
 
 impl Tick {
@@ -220,9 +254,22 @@ impl Tick {
                     *m = Mode::Busy { msg: BUSY_MSG.into(), since: Instant::now() };
                 }
             }
+            let want_keys = matches!(&*m, Mode::Target { done: None, .. });
+            if want_keys != self.keys {
+                self.keys = want_keys;
+                unsafe {
+                    if want_keys {
+                        _ = RegisterHotKey(Some(wins[0]), 1, MOD_NOREPEAT, VK_F9);
+                        _ = RegisterHotKey(Some(wins[0]), 2, MOD_NOREPEAT | MOD_SHIFT, VK_F9);
+                    } else {
+                        _ = UnregisterHotKey(Some(wins[0]), 1);
+                        _ = UnregisterHotKey(Some(wins[0]), 2);
+                    }
+                }
+            }
             let tip = match &*m {
                 Mode::Hidden => READY,
-                Mode::Target { .. } => "Wayfinder: pointing - click inside the ring",
+                Mode::Target { .. } => "Wayfinder: pointing - click inside the ring, or press F9",
                 Mode::Busy { .. } => "Wayfinder: Claude is working out the next step",
             };
             if tip != self.tip {
@@ -280,7 +327,7 @@ fn buddy_layout(m: &Mode) -> Option<Frame> {
 fn layout(m: &Mode) -> Option<Frame> {
     match m {
         Mode::Hidden => None,
-        Mode::Target { x, y, label, done, .. } => Some(arrow_layout(*x, *y, label, done.is_some())),
+        Mode::Target { x, y, label, done, right, .. } => Some(arrow_layout(*x, *y, label, done.is_some(), *right)),
         Mode::Busy { msg, since } => Some(badge_layout(msg, since.elapsed() > BUSY_STALE)),
     }
 }
@@ -300,7 +347,9 @@ fn measure(text: &str, font_idx: usize, width: i32) -> (i32, i32) {
     }
 }
 
-fn arrow_layout(tx: i32, ty: i32, label: &str, done: bool) -> Frame {
+fn arrow_layout(tx: i32, ty: i32, label: &str, done: bool, right: bool) -> Frame {
+    let hint = if right { "Press F9 to right-click" } else { "Press F9 to click" };
+    let label = &if label.is_empty() { hint.to_string() } else { format!("{label}\n{hint}") };
     let (_, (ml, mt, mr, mb)) = win::monitor_at(tx, ty);
     // tail comes from whichever side of the monitor has more room
     let dx = if tx - ml > mr - tx { -1.0 } else { 1.0 };

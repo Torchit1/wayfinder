@@ -20,10 +20,10 @@ const DEFAULT_PORT: u16 = 8790;
 const USAGE: &str = "wayfinder: point at things on screen for a person to click (Windows)
 
   wayfinder serve [--port N] [--lan --allow IP,IP]   run the overlay + API (localhost only unless --lan)
-  wayfinder at \"name\" [\"label\"]       arrow on a control found by name (no screenshot); learned route if hidden
+  wayfinder at \"name\" [\"label\"] [--right]       arrow on a control found by name (no screenshot); learned route if hidden
   wayfinder find \"name\"               list visible controls whose name contains this
   wayfinder shot [file.png] [--width N]  screenshot of the whole desktop with the mouse marked
-  wayfinder point X Y [\"label\"] [--raw] [--remember \"name\"]  arrow at X,Y in the last shot's pixels;
+  wayfinder point X Y [\"label\"] [--raw] [--right] [--remember \"name\"]  arrow at X,Y in the last shot's pixels;
                                     --remember: learn this spot so `at \"name\"` finds it next time
   wayfinder wait [seconds]            block until the person clicks inside the ring (exit 0) or timeout (1)
   wayfinder busy [\"message\"]          'working out the next step' badge
@@ -137,7 +137,7 @@ impl Server {
                 let route = if m.is_empty() { self.route_json(&qy) } else { "null".into() };
                 Response::json(200, format!(r#"{{"matches":[{}],"route":{route}}}"#, matches_json(&m)))
             }
-            ("POST", "/at") => self.at(&s("q"), &s("label")),
+            ("POST", "/at") => self.at(&s("q"), &s("label"), s("button") == "right"),
             ("POST", "/point") => {
                 let (Some(x), Some(y)) = (n("x"), n("y")) else {
                     return Response::json(400, r#"{"error":"need x, y"}"#.into());
@@ -150,7 +150,7 @@ impl Server {
                     };
                     ((x as f64 * scale) as i32 + ox, (y as f64 * scale) as i32 + oy)
                 };
-                self.shared.set_target(x, y, &s("label"));
+                self.shared.set_target(x, y, &s("label"), s("button") == "right");
                 let name = s("name");
                 let kept = !name.is_empty() && self.index.remember(&name, x, y);
                 Response::json(200, format!(r#"{{"ok":true,"remembered":{kept}}}"#))
@@ -222,16 +222,16 @@ impl Server {
         }
     }
 
-    fn at(&self, query: &str, label: &str) -> Response {
+    fn at(&self, query: &str, label: &str, right: bool) -> Response {
         if let Some(m) = self.index.lookup(query, 1).into_iter().next() {
             let label = if label.is_empty() { format!("Click {}", m.name) } else { label.into() };
-            self.shared.set_target(m.center.0, m.center.1, &label);
+            self.shared.set_target(m.center.0, m.center.1, &label, right);
             return Response::json(200, format!(r#"{{"pointed":{},"step":1,"of":1}}"#, match_json(&m)));
         }
         let Some(steps) = self.index.route(query, 3) else {
             if let Some((name, (x, y))) = self.index.recall(query) {
                 let label = if label.is_empty() { format!("Click {name}") } else { label.into() };
-                self.shared.set_target(x, y, &label);
+                self.shared.set_target(x, y, &label, right);
                 return Response::json(200, format!(r#"{{"pointed":{{"name":{},"center":[{x},{y}]}},"remembered":true}}"#, q(&name)));
             }
             return Response::json(404, format!(r#"{{"error":{}}}"#, q(&format!("'{query}' isn't on screen, and no learned route or remembered spot"))));
@@ -246,7 +246,7 @@ impl Server {
         } else {
             label.into()
         };
-        self.shared.set_target(first.center.0, first.center.1, &label);
+        self.shared.set_target(first.center.0, first.center.1, &label, right || steps[0].1 == "right");
         Response::json(
             200,
             format!(
@@ -300,7 +300,12 @@ fn client(cmd: &str, args: &[String]) -> i32 {
     let res = match cmd {
         "health" => call("GET", "/health", "", 5),
         "find" => call("GET", &format!("/find?q={}", http::encode(arg(0))), "", 5),
-        "at" => call("POST", "/at", &format!(r#"{{"q":{},"label":{}}}"#, q(arg(0)), q(arg(1))), 5),
+        "at" => {
+            let right = args.iter().any(|a| a == "--right");
+            let label = args.get(1).filter(|a| *a != "--right").map_or("", String::as_str);
+            let button = if right { "right" } else { "" };
+            call("POST", "/at", &format!(r#"{{"q":{},"label":{},"button":"{button}"}}"#, q(arg(0)), q(label)), 5)
+        }
         "wait" => {
             let t = json::int(arg(0)).unwrap_or(600).max(0) as u64;
             call("GET", &format!("/wait?timeout={t}"), "", t + 10)
@@ -341,16 +346,18 @@ fn client(cmd: &str, args: &[String]) -> i32 {
                 eprintln!("usage: wayfinder point X Y [label] [--raw] [--remember name]");
                 return 2;
             };
-            let (mut raw, mut label, mut name) = (false, "", "");
+            let (mut raw, mut right, mut label, mut name) = (false, false, "", "");
             let mut it = args[2..].iter();
             while let Some(a) = it.next() {
                 match a.as_str() {
                     "--raw" => raw = true,
+                    "--right" => right = true,
                     "--remember" => name = it.next().map_or("", String::as_str),
                     other => label = other,
                 }
             }
-            call("POST", "/point", &format!(r#"{{"x":{x},"y":{y},"label":{},"raw":{raw},"name":{}}}"#, q(label), q(name)), 5)
+            let button = if right { "right" } else { "" };
+            call("POST", "/point", &format!(r#"{{"x":{x},"y":{y},"label":{},"raw":{raw},"name":{},"button":"{button}"}}"#, q(label), q(name)), 5)
         }
         _ => {
             eprintln!("unknown command '{cmd}'\n\n{USAGE}");

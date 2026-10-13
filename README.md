@@ -10,7 +10,7 @@ It was built as an **accessibility tool**: for people who find screens hard to n
 
 - **Single `.exe` under 256 KB**, with a tray icon (right-click: hide arrow / quit), no runtime, no dependencies beyond Windows itself.
 - **Finds controls by name, not by screenshot.** It reads the same accessibility tree screen readers use (UI Automation), so it works on sites and apps that block screen capture. Lookups take well under a millisecond from a live in-memory index.
-- **Never clicks or types for you.** It only draws, watches for your click inside the ring, and can put text on your clipboard so you can right-click → Paste instead of typing.
+- **Only clicks when you say so.** It draws, watches for your click inside the ring, and can put text on your clipboard so you can right-click → Paste instead of typing. If clicking is hard, press **F9** while an arrow is up and it clicks the target for you (right-clicks when the step needs it; **Shift+F9** always right-clicks). F9 only works while an arrow is showing, and nothing else (not the agent, not the API) can make it click.
 - **Learns how to reach hidden things.** When a click opens a menu, it remembers that the menu's items are reached through that click. Next time it points at the first step. If a route stops working (an app changed), it notices and forgets it.
 - **Remembers spots it can't see.** When the agent points at something from a screenshot, `--remember "name"` saves it relative to the nearest named control, so `at "name"` finds it instantly next time, even after the window moves, resizes or reflows.
 - **A cursor buddy.** A small badge rides next to your mouse pointer, where your eyes already are: a compass needle towards the arrow while it's far away, and a spinner while the agent works out the next step (amber after 2 minutes: check the chat).
@@ -28,7 +28,7 @@ wayfinder wait 600                    # blocks until you click inside the ring (
 | Command | What it does |
 |---|---|
 | `wayfinder serve [--port N] [--lan --allow IP,IP]` | Run the overlay, index and API. |
-| `wayfinder at "name" ["label"]` | Arrow on the best visible control with that name. If it's hidden and a route was learned, arrow on the first step. |
+| `wayfinder at "name" ["label"] [--right]` | Arrow on the best visible control with that name. If it's hidden and a route was learned, arrow on the first step. |
 | `wayfinder find "name"` | List visible controls whose name contains this (JSON). |
 | `wayfinder shot [file.png] [--width N]` | Screenshot of the whole desktop with the mouse marked; prints which monitor the mouse is on. |
 | `wayfinder point X Y ["label"] [--raw] [--remember "name"]` | Arrow at X,Y in the last shot's pixels (`--raw`: real screen pixels). `--remember` saves the spot so `at "name"` finds it next time. |
