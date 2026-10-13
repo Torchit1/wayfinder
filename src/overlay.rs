@@ -102,7 +102,7 @@ static TRAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsiz
 static TASKBAR_CREATED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static SHARED: std::sync::OnceLock<&'static Shared> = std::sync::OnceLock::new();
 static BUDDY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-const BUDDY_SIZE: i32 = 44;
+const BUDDY_SIZE: i32 = 24;
 /// the needle hides once the mouse is this close to the target (the big arrow is in view)
 const NEAR: i32 = 220;
 
@@ -274,7 +274,7 @@ fn buddy_layout(m: &Mode) -> Option<Frame> {
         }
         _ => return None,
     };
-    Some(Frame { origin: (cx + 18, cy + 22), size: (BUDDY_SIZE, BUDDY_SIZE), scene })
+    Some(Frame { origin: (cx + 12, cy + 16), size: (BUDDY_SIZE, BUDDY_SIZE), scene })
 }
 
 fn layout(m: &Mode) -> Option<Frame> {
@@ -483,32 +483,31 @@ unsafe fn paint(dc: HDC, fr: &Frame) {
                 draw_text(mem, msg, *text, 1, DT_SINGLELINE | DT_VCENTER);
             }
             Scene::Compass { dir } => {
+                // just the needle: no backing disc, so it stays out of the way
                 let c = BUDDY_SIZE / 2;
-                let br = CreateSolidBrush(COLORREF(PANEL));
-                with(mem, pen(WHITE, 2), br.into(), || _ = Ellipse(mem, 2, 2, BUDDY_SIZE - 2, BUDDY_SIZE - 2));
-                _ = DeleteObject(br.into());
                 let at = |along: f64, side: f64| POINT {
                     x: c + (dir.0 * along - dir.1 * side) as i32,
                     y: c + (dir.1 * along + dir.0 * side) as i32,
                 };
                 let red = CreateSolidBrush(COLORREF(RED));
-                with(mem, pen(RED, 1), red.into(), || _ = Polygon(mem, &[at(16.0, 0.0), at(-8.0, 9.0), at(-3.0, 0.0), at(-8.0, -9.0)]));
+                with(mem, pen(RED, 1), red.into(), || _ = Polygon(mem, &[at(9.0, 0.0), at(-5.0, 5.5), at(-2.0, 0.0), at(-5.0, -5.5)]));
                 _ = DeleteObject(red.into());
             }
             Scene::Spinner { col, lit } => {
+                // just a short trail of dots: no ring or backing
                 let c = BUDDY_SIZE as f64 / 2.0;
-                let br = CreateSolidBrush(COLORREF(PANEL));
-                with(mem, pen(*col, 2), br.into(), || _ = Ellipse(mem, 2, 2, BUDDY_SIZE - 2, BUDDY_SIZE - 2));
-                _ = DeleteObject(br.into());
                 for i in 0..8 {
-                    let a = i as f64 * std::f64::consts::FRAC_PI_4;
-                    let (x, y) = ((c + 12.0 * a.cos()) as i32, (c + 12.0 * a.sin()) as i32);
-                    // trail: the lit dot full colour, the two behind it dimmer, the rest faint
                     let age = (*lit + 8 - i) % 8;
-                    let shade = |v: u32| match age { 0 => v, 1 | 2 => v / 2, _ => v / 5 };
+                    if age > 2 {
+                        continue;
+                    }
+                    let a = i as f64 * std::f64::consts::FRAC_PI_4;
+                    let (x, y) = ((c + 6.5 * a.cos()) as i32, (c + 6.5 * a.sin()) as i32);
+                    // trail: the lit dot full colour, the two behind it dimmer
+                    let shade = |v: u32| if age == 0 { v } else { v * 2 / (age as u32 + 3) };
                     let rgb = |sh: u32| shade((*col >> sh) & 0xff) << sh;
                     let dot_col = rgb(0) | rgb(8) | rgb(16);
-                    let r = if age == 0 { 4 } else { 3 };
+                    let r = if age == 0 { 2 } else { 1 };
                     let b = CreateSolidBrush(COLORREF(dot_col));
                     with(mem, pen(dot_col, 1), b.into(), || _ = Ellipse(mem, x - r, y - r, x + r, y + r));
                     _ = DeleteObject(b.into());
