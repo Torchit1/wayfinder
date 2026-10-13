@@ -1,6 +1,6 @@
 #!/bin/bash
 # Drive `pointer serve --lan` from another machine (e.g. an agent in a container).
-#   POINTER_HOST=http://192.168.1.10:8790  POINTER_TOKEN=<contents of %LOCALAPPDATA%\pointer\token.txt>
+#   POINTER_HOST=http://192.168.1.10:8790  POINTER_TOKEN=<contents of token.txt next to pointer.exe>
 # Usage mirrors the Windows CLI:
 #   pointer.sh at "name" ["label"] | find "name" | shot [file.png] | point X Y ["label"]
 #   pointer.sh wait [seconds] | busy ["msg"] | clip "text" | off | health

@@ -43,7 +43,7 @@ Task Scheduler → Create Task → *At log on*, action `pointer.exe serve`, *Run
 
 ## Remote agents (optional)
 
-`pointer serve --lan --allow 192.168.1.50` also listens on your network, but only answers the listed IPs, and every request needs the token in `%LOCALAPPDATA%\pointer\token.txt`. [`clients/pointer.sh`](clients/pointer.sh) is a curl client for an agent on another machine (`POINTER_HOST`, `POINTER_TOKEN`).
+`pointer serve --lan --allow 192.168.1.50` also listens on your network, but only answers the listed IPs, and every request needs the token in `token.txt` next to `pointer.exe`. [`clients/pointer.sh`](clients/pointer.sh) is a curl client for an agent on another machine (`POINTER_HOST`, `POINTER_TOKEN`).
 
 **Security:** anything holding the token can take screenshots of your desktop and put text on your clipboard. Keep it localhost-only unless you need remote access, allow-list exact IPs, and treat the token like a password. The API can't click, type, run programs or read the clipboard.
 

@@ -1,2 +1,5 @@
 /target
+/bin
 *.png
+token.txt
+learned.tsv

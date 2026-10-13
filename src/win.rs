@@ -72,12 +72,10 @@ pub fn set_clipboard(text: &str) -> bool {
     }
 }
 
-/// %LOCALAPPDATA%\pointer (token, learned routes).
+/// The exe's own folder holds token.txt and learned.tsv: one predictable place (portable-app
+/// style), the same for the server and every client whatever environment launched them.
 pub fn data_dir() -> PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    let d = base.join("pointer");
-    let _ = std::fs::create_dir_all(&d);
-    d
+    std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("."))
 }
 
 pub fn invalidate(hwnd: HWND) {

@@ -29,7 +29,7 @@ const USAGE: &str = "pointer: point at things on screen for a person to click (W
   pointer clip \"text\"               put text on the clipboard so they can right-click > Paste
   pointer off | quit | health
 
-Env: POINTER_PORT (default 8790). Token: %LOCALAPPDATA%\\pointer\\token.txt";
+Env: POINTER_PORT (default 8790). Token: token.txt next to pointer.exe";
 
 fn main() {
     unsafe {
