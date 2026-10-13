@@ -1,5 +1,5 @@
 [package]
-name = "pointer"
+name = "wayfinder"
 description = "Let an AI agent point at things on a Windows screen instead of clicking them"
 license = "MIT"
 version = "0.1.0"

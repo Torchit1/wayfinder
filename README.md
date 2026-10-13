@@ -1,4 +1,4 @@
-# pointer
+# Wayfinder
 
 **Let an AI agent point at things on your Windows screen instead of clicking them.**
 
@@ -16,34 +16,34 @@ It was built as an **accessibility tool**: for people who find screens hard to n
 ## Quick start
 
 ```
-pointer serve                       # run once (e.g. at login); localhost-only by default
-pointer at "File Explorer" "Click the yellow folder"
-pointer wait 600                    # blocks until you click inside the ring (exit 0) or timeout (1)
+wayfinder serve                       # run once (e.g. at login); localhost-only by default
+wayfinder at "File Explorer" "Click the yellow folder"
+wayfinder wait 600                    # blocks until you click inside the ring (exit 0) or timeout (1)
 ```
 
 | Command | What it does |
 |---|---|
-| `pointer serve [--port N] [--lan --allow IP,IP]` | Run the overlay, index and API. |
-| `pointer at "name" ["label"]` | Arrow on the best visible control with that name. If it's hidden and a route was learned, arrow on the first step. |
-| `pointer find "name"` | List visible controls whose name contains this (JSON). |
-| `pointer shot [file.png] [--width N]` | Screenshot of the whole desktop with the mouse marked; prints which monitor the mouse is on. |
-| `pointer point X Y ["label"] [--raw]` | Arrow at X,Y in the last shot's pixels (`--raw`: real screen pixels). |
-| `pointer wait [seconds]` | Wait for the person to click inside the ring. |
-| `pointer busy ["message"]` | Show the "working out the next step" badge (also shown automatically after each click). |
-| `pointer clip "text"` | Put text on the clipboard (write-only; it never reads it). |
-| `pointer off` / `quit` / `health` | Hide the arrow / stop the server / status. |
+| `wayfinder serve [--port N] [--lan --allow IP,IP]` | Run the overlay, index and API. |
+| `wayfinder at "name" ["label"]` | Arrow on the best visible control with that name. If it's hidden and a route was learned, arrow on the first step. |
+| `wayfinder find "name"` | List visible controls whose name contains this (JSON). |
+| `wayfinder shot [file.png] [--width N]` | Screenshot of the whole desktop with the mouse marked; prints which monitor the mouse is on. |
+| `wayfinder point X Y ["label"] [--raw]` | Arrow at X,Y in the last shot's pixels (`--raw`: real screen pixels). |
+| `wayfinder wait [seconds]` | Wait for the person to click inside the ring. |
+| `wayfinder busy ["message"]` | Show the "working out the next step" badge (also shown automatically after each click). |
+| `wayfinder clip "text"` | Put text on the clipboard (write-only; it never reads it). |
+| `wayfinder off` / `quit` / `health` | Hide the arrow / stop the server / status. |
 
 ## Using it from an agent
 
-Copy [`skill/SKILL.md`](skill/SKILL.md) into your agent's skills folder (for Claude Code: `~/.claude/skills/pointer/SKILL.md`). It tells the agent the loop: name lookup first, screenshot as fallback, wait for the click, never make the person type.
+Copy [`skill/SKILL.md`](skill/SKILL.md) into your agent's skills folder (for Claude Code: `~/.claude/skills/wayfinder/SKILL.md`). It tells the agent the loop: name lookup first, screenshot as fallback, wait for the click, never make the person type.
 
 ## Running at login
 
-Task Scheduler → Create Task → *At log on*, action `pointer.exe serve`, *Run only when user is logged on*. It needs to run in your desktop session to draw on screen. It does not need admin.
+Task Scheduler → Create Task → *At log on*, action `wayfinder.exe serve`, *Run only when user is logged on*. It needs to run in your desktop session to draw on screen. It does not need admin.
 
 ## Remote agents (optional)
 
-`pointer serve --lan --allow 192.168.1.50` also listens on your network, but only answers the listed IPs, and every request needs the token in `token.txt` next to `pointer.exe`. [`clients/pointer.sh`](clients/pointer.sh) is a curl client for an agent on another machine (`POINTER_HOST`, `POINTER_TOKEN`).
+`wayfinder serve --lan --allow 192.168.1.50` also listens on your network, but only answers the listed IPs, and every request needs the token in `token.txt` next to `wayfinder.exe`. [`clients/wayfinder.sh`](clients/wayfinder.sh) is a curl client for an agent on another machine (`WAYFINDER_HOST`, `WAYFINDER_TOKEN`).
 
 **Security:** anything holding the token can take screenshots of your desktop and put text on your clipboard. Keep it localhost-only unless you need remote access, allow-list exact IPs, and treat the token like a password. The API can't click, type, run programs or read the clipboard.
 
@@ -56,7 +56,7 @@ Task Scheduler → Create Task → *At log on*, action `pointer.exe serve`, *Run
 ## Building
 
 ```
-cargo build --release      # target/release/pointer.exe
+cargo build --release      # target/release/wayfinder.exe
 ```
 
 The release profile is tuned for size (`opt-level = "z"`, LTO, `panic = "abort"`, stripped). To stay small, the JSON, HTTP and PNG handling are hand-written or use Windows' built-ins (WIC for PNG) rather than crates.

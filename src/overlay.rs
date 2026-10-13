@@ -92,7 +92,7 @@ thread_local! {
 pub fn run(shared: &'static Shared, index: &'static Index) {
     unsafe {
         let inst = GetModuleHandleW(None).unwrap_or_default();
-        let cls = win::wide("PointerOverlay");
+        let cls = win::wide("WayfinderOverlay");
         RegisterClassW(&WNDCLASSW {
             lpfnWndProc: Some(wndproc),
             hInstance: inst.into(),

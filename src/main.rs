@@ -1,5 +1,5 @@
-//! pointer: lets an AI agent point at things on a Windows screen instead of clicking them.
-//! One process (`pointer serve`) owns the overlay, the UI index and a small token-protected HTTP
+//! wayfinder: lets an AI agent point at things on a Windows screen instead of clicking them.
+//! One process (`wayfinder serve`) owns the overlay, the UI index and a small token-protected HTTP
 //! API; every other subcommand is a thin client of that API.
 
 mod http;
@@ -17,19 +17,19 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const DEFAULT_PORT: u16 = 8790;
-const USAGE: &str = "pointer: point at things on screen for a person to click (Windows)
+const USAGE: &str = "wayfinder: point at things on screen for a person to click (Windows)
 
-  pointer serve [--port N] [--lan --allow IP,IP]   run the overlay + API (localhost only unless --lan)
-  pointer at \"name\" [\"label\"]       arrow on a control found by name (no screenshot); learned route if hidden
-  pointer find \"name\"               list visible controls whose name contains this
-  pointer shot [file.png] [--width N]  screenshot of the whole desktop with the mouse marked
-  pointer point X Y [\"label\"] [--raw] arrow at X,Y in the last shot's pixels (--raw: screen pixels)
-  pointer wait [seconds]            block until the person clicks inside the ring (exit 0) or timeout (1)
-  pointer busy [\"message\"]          'working out the next step' badge
-  pointer clip \"text\"               put text on the clipboard so they can right-click > Paste
-  pointer off | quit | health
+  wayfinder serve [--port N] [--lan --allow IP,IP]   run the overlay + API (localhost only unless --lan)
+  wayfinder at \"name\" [\"label\"]       arrow on a control found by name (no screenshot); learned route if hidden
+  wayfinder find \"name\"               list visible controls whose name contains this
+  wayfinder shot [file.png] [--width N]  screenshot of the whole desktop with the mouse marked
+  wayfinder point X Y [\"label\"] [--raw] arrow at X,Y in the last shot's pixels (--raw: screen pixels)
+  wayfinder wait [seconds]            block until the person clicks inside the ring (exit 0) or timeout (1)
+  wayfinder busy [\"message\"]          'working out the next step' badge
+  wayfinder clip \"text\"               put text on the clipboard so they can right-click > Paste
+  wayfinder off | quit | health
 
-Env: POINTER_PORT (default 8790). Token: token.txt next to pointer.exe";
+Env: WAYFINDER_PORT (default 8790). Token: token.txt next to wayfinder.exe";
 
 fn main() {
     unsafe {
@@ -66,7 +66,7 @@ fn token() -> String {
 }
 
 fn port() -> u16 {
-    std::env::var("POINTER_PORT").ok().and_then(|p| json::int(&p)).map_or(DEFAULT_PORT, |p| p as u16)
+    std::env::var("WAYFINDER_PORT").ok().and_then(|p| json::int(&p)).map_or(DEFAULT_PORT, |p| p as u16)
 }
 
 // ---------------------------------------------------------------- server
@@ -102,7 +102,7 @@ fn serve(args: &[String]) -> i32 {
     let addr = format!("{}:{port}", if lan { "0.0.0.0" } else { "127.0.0.1" });
     let bound = std::net::TcpListener::bind(&addr).map(drop);
     if let Err(e) = bound {
-        eprintln!("pointer: can't listen on {addr}: {e} (already running?)");
+        eprintln!("wayfinder: can't listen on {addr}: {e} (already running?)");
         return 1;
     }
     std::thread::spawn(move || {
@@ -327,7 +327,7 @@ fn client(cmd: &str, args: &[String]) -> i32 {
         }
         "point" => {
             let (Some(x), Some(y)) = (json::int(arg(0)), json::int(arg(1))) else {
-                eprintln!("usage: pointer point X Y [label] [--raw]");
+                eprintln!("usage: wayfinder point X Y [label] [--raw]");
                 return 2;
             };
             let raw = args.iter().any(|a| a == "--raw");
@@ -354,7 +354,7 @@ fn report(res: std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)>) -> i32 {
             if status != 200 || text.contains(r#""hit":false"#) { 1 } else { 0 }
         }
         Err(e) => {
-            eprintln!("pointer server not reachable on 127.0.0.1:{} ({e}). Start it: pointer serve", port());
+            eprintln!("wayfinder server not reachable on 127.0.0.1:{} ({e}). Start it: wayfinder serve", port());
             3
         }
     }

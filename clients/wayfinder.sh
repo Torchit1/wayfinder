@@ -1,11 +1,11 @@
 #!/bin/bash
-# Drive `pointer serve --lan` from another machine (e.g. an agent in a container).
-#   POINTER_HOST=http://192.168.1.10:8790  POINTER_TOKEN=<contents of token.txt next to pointer.exe>
+# Drive `wayfinder serve --lan` from another machine (e.g. an agent in a container).
+#   WAYFINDER_HOST=http://192.168.1.10:8790  WAYFINDER_TOKEN=<contents of token.txt next to wayfinder.exe>
 # Usage mirrors the Windows CLI:
-#   pointer.sh at "name" ["label"] | find "name" | shot [file.png] | point X Y ["label"]
-#   pointer.sh wait [seconds] | busy ["msg"] | clip "text" | off | health
-HOST=${POINTER_HOST:?set POINTER_HOST, e.g. http://192.168.1.10:8790}
-TOKEN=${POINTER_TOKEN:?set POINTER_TOKEN}
+#   wayfinder.sh at "name" ["label"] | find "name" | shot [file.png] | point X Y ["label"]
+#   wayfinder.sh wait [seconds] | busy ["msg"] | clip "text" | off | health
+HOST=${WAYFINDER_HOST:?set WAYFINDER_HOST, e.g. http://192.168.1.10:8790}
+TOKEN=${WAYFINDER_TOKEN:?set WAYFINDER_TOKEN}
 CURL=(curl -sS --fail-with-body --connect-timeout 5 -H "Authorization: Bearer $TOKEN")
 js() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
 
