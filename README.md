@@ -9,6 +9,7 @@ You ask your agent (Claude Code, Codex, anything that can run a command) how to 
 It was built as an **accessibility tool**: for people who find screens hard to navigate and want guidance, not an agent taking over their mouse.
 
 - **Single `.exe` under 256 KB**, with a tray icon (right-click: hide arrow / quit), no runtime, no dependencies beyond Windows itself.
+- **Outlines the actual control.** When a control is found by name, a pulsing red outline hugs its exact edges (clicking anywhere inside counts); spots without known edges get a ring.
 - **Finds controls by name, not by screenshot.** It reads the same accessibility tree screen readers use (UI Automation), so it works on sites and apps that block screen capture. Lookups take well under a millisecond from a live in-memory index.
 - **Only clicks when you say so.** It draws, watches for your click inside the ring, and can put text on your clipboard so you can right-click → Paste instead of typing. If clicking is hard, press **F9** while an arrow is up and it clicks the target for you (right-clicks when the step needs it; **Shift+F9** always right-clicks). F9 only works while an arrow is showing, and nothing else (not the agent, not the API) can make it click.
 - **Learns how to reach hidden things.** When a click opens a menu, it remembers that the menu's items are reached through that click. Next time it points at the first step. If a route stops working (an app changed), it notices and forgets it.

@@ -150,7 +150,7 @@ impl Server {
                     };
                     ((x as f64 * scale) as i32 + ox, (y as f64 * scale) as i32 + oy)
                 };
-                self.shared.set_target(x, y, &s("label"), s("button") == "right");
+                self.shared.set_target(x, y, &s("label"), s("button") == "right", None);
                 let name = s("name");
                 let kept = !name.is_empty() && self.index.remember(&name, x, y);
                 Response::json(200, format!(r#"{{"ok":true,"remembered":{kept}}}"#))
@@ -225,13 +225,13 @@ impl Server {
     fn at(&self, query: &str, label: &str, right: bool) -> Response {
         if let Some(m) = self.index.lookup(query, 1).into_iter().next() {
             let label = if label.is_empty() { format!("Click {}", m.name) } else { label.into() };
-            self.shared.set_target(m.center.0, m.center.1, &label, right);
+            self.shared.set_target(m.center.0, m.center.1, &label, right, Some(m.rect));
             return Response::json(200, format!(r#"{{"pointed":{},"step":1,"of":1}}"#, match_json(&m)));
         }
         let Some(steps) = self.index.route(query, 3) else {
             if let Some((name, (x, y))) = self.index.recall(query) {
                 let label = if label.is_empty() { format!("Click {name}") } else { label.into() };
-                self.shared.set_target(x, y, &label, right);
+                self.shared.set_target(x, y, &label, right, None);
                 return Response::json(200, format!(r#"{{"pointed":{{"name":{},"center":[{x},{y}]}},"remembered":true}}"#, q(&name)));
             }
             return Response::json(404, format!(r#"{{"error":{}}}"#, q(&format!("'{query}' isn't on screen, and no learned route or remembered spot"))));
@@ -246,7 +246,7 @@ impl Server {
         } else {
             label.into()
         };
-        self.shared.set_target(first.center.0, first.center.1, &label, right || steps[0].1 == "right");
+        self.shared.set_target(first.center.0, first.center.1, &label, right || steps[0].1 == "right", Some(first.rect));
         Response::json(
             200,
             format!(

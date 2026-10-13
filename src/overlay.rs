@@ -32,7 +32,8 @@ pub const BUSY_MSG: &str = "Claude is working out the next step";
 
 pub enum Mode {
     Hidden,
-    Target { x: i32, y: i32, label: String, id: u64, done: Option<Instant>, right: bool },
+    /// `rect`: the control's own bounds when known (found by name): outline it instead of a ring
+    Target { x: i32, y: i32, label: String, id: u64, done: Option<Instant>, right: bool, rect: Option<Rect> },
     Busy { msg: String, since: Instant },
 }
 
@@ -54,14 +55,14 @@ impl Shared {
         Shared { mode: Mutex::new(Mode::Hidden), hit: Mutex::new(None), hit_cv: Condvar::new(), next_id: Mutex::new(0) }
     }
 
-    pub fn set_target(&self, x: i32, y: i32, label: &str, right: bool) -> u64 {
+    pub fn set_target(&self, x: i32, y: i32, label: &str, right: bool, rect: Option<Rect>) -> u64 {
         let id = {
             let mut n = self.next_id.lock().unwrap_or_else(|e| e.into_inner());
             *n += 1;
             *n
         };
         *self.hit.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        *self.mode.lock().unwrap_or_else(|e| e.into_inner()) = Mode::Target { x, y, label: label.into(), id, done: None, right };
+        *self.mode.lock().unwrap_or_else(|e| e.into_inner()) = Mode::Target { x, y, label: label.into(), id, done: None, right, rect };
         id
     }
 
@@ -79,7 +80,8 @@ impl Shared {
 
 /// What to paint, in window-relative pixels.
 enum Scene {
-    Arrow { tail: (i32, i32), base: (i32, i32), tip: (i32, i32), ring: (i32, i32, i32), ring_col: u32, label: Option<(RECT, String)> },
+    /// `ring`: bounds of the ring (round) or of the outline hugging the control (not round)
+    Arrow { tail: (i32, i32), base: (i32, i32), tip: (i32, i32), ring: Rect, round: bool, ring_col: u32, label: Option<(RECT, String)> },
     Badge { panel: RECT, text: RECT, msg: String, col: u32, dot: Option<RECT> },
     /// buddy: needle from the centre towards the target (unit vector)
     Compass { dir: (f64, f64) },
@@ -236,8 +238,13 @@ impl Tick {
                 let (x, y) = win::cursor();
                 index.on_click(x, y, button);
                 let mut m = shared.mode.lock().unwrap_or_else(|e| e.into_inner());
-                if let Mode::Target { x: tx, y: ty, id, done, .. } = &mut *m {
-                    if done.is_none() && (((x - *tx).pow(2) + (y - *ty).pow(2)) as f64).sqrt() <= HIT_R {
+                if let Mode::Target { x: tx, y: ty, id, done, rect, .. } = &mut *m {
+                    // inside the outlined control (a little slack), or within the ring
+                    let inside = match rect {
+                        Some(r) => r.0 - 10 <= x && x < r.2 + 10 && r.1 - 10 <= y && y < r.3 + 10,
+                        None => (((x - *tx).pow(2) + (y - *ty).pow(2)) as f64).sqrt() <= HIT_R,
+                    };
+                    if done.is_none() && inside {
                         *done = Some(Instant::now());
                         *shared.hit.lock().unwrap_or_else(|e| e.into_inner()) = Some(Hit { id: *id, x, y });
                         shared.hit_cv.notify_all();
@@ -327,7 +334,7 @@ fn buddy_layout(m: &Mode) -> Option<Frame> {
 fn layout(m: &Mode) -> Option<Frame> {
     match m {
         Mode::Hidden => None,
-        Mode::Target { x, y, label, done, right, .. } => Some(arrow_layout(*x, *y, label, done.is_some(), *right)),
+        Mode::Target { x, y, label, done, right, rect, .. } => Some(arrow_layout(*x, *y, label, done.is_some(), *right, *rect)),
         Mode::Busy { msg, since } => Some(badge_layout(msg, since.elapsed() > BUSY_STALE)),
     }
 }
@@ -347,7 +354,7 @@ fn measure(text: &str, font_idx: usize, width: i32) -> (i32, i32) {
     }
 }
 
-fn arrow_layout(tx: i32, ty: i32, label: &str, done: bool, right: bool) -> Frame {
+fn arrow_layout(tx: i32, ty: i32, label: &str, done: bool, right: bool, rect: Option<Rect>) -> Frame {
     let hint = if right { "Press F9 to right-click" } else { "Press F9 to click" };
     let label = &if label.is_empty() { hint.to_string() } else { format!("{label}\n{hint}") };
     let (_, (ml, mt, mr, mb)) = win::monitor_at(tx, ty);
@@ -355,10 +362,19 @@ fn arrow_layout(tx: i32, ty: i32, label: &str, done: bool, right: bool) -> Frame
     let dx = if tx - ml > mr - tx { -1.0 } else { 1.0 };
     let dy = if ty - mt > mb - ty { -1.0 } else { 1.0 };
     let at = |d: f64| ((tx as f64 + dx * d / SQRT_2) as i32, (ty as f64 + dy * d / SQRT_2) as i32);
-    let (tail, tip, base) = (at(190.0), at(34.0), at(80.0));
     let t = Instant::now().duration_since(*START.get_or_init(Instant::now)).as_secs_f64();
-    let rad = if done { 34 } else { 30 + (5.0 * (1.0 + (t * 3.75).sin())) as i32 };
-    let mut bounds = (tx - 50, ty - 50, tx + 50, ty + 50);
+    let pulse = if done { 4 } else { (5.0 * (1.0 + (t * 3.75).sin())) as i32 };
+    // `reach`: distance from the centre to the outline along the arrow's 45-degree line
+    let (reach, ring, round) = match rect {
+        Some((l, tp, r, b)) => {
+            let pad = 6 + pulse;
+            let half = ((r - l) / 2).min((b - tp) / 2) as f64;
+            (half * SQRT_2 + 16.0, (l - pad, tp - pad, r + pad, b + pad), false)
+        }
+        None => (30.0, (tx - 30 - pulse, ty - 30 - pulse, tx + 30 + pulse, ty + 30 + pulse), true),
+    };
+    let (tail, tip, base) = (at(reach + 160.0), at(reach + 4.0), at(reach + 50.0));
+    let mut bounds = (ring.0 - 10, ring.1 - 10, ring.2 + 10, ring.3 + 10);
     let mut grow = |r: Rect| bounds = (bounds.0.min(r.0), bounds.1.min(r.1), bounds.2.max(r.2), bounds.3.max(r.3));
     grow((tail.0 - 20, tail.1 - 20, tail.0 + 20, tail.1 + 20));
     let label = (!label.is_empty()).then(|| {
@@ -381,7 +397,8 @@ fn arrow_layout(tx: i32, ty: i32, label: &str, done: bool, right: bool) -> Frame
             tail: rel(tail),
             base: rel(base),
             tip: rel(tip),
-            ring: (tx - o.0, ty - o.1, rad),
+            ring: (ring.0 - o.0, ring.1 - o.1, ring.2 - o.0, ring.3 - o.1),
+            round,
             ring_col: if done { GREEN } else { RED },
             label: label.map(|(r, s)| (RECT { left: r.left - o.0, top: r.top - o.1, right: r.right - o.0, bottom: r.bottom - o.1 }, s)),
         },
@@ -485,7 +502,7 @@ unsafe fn paint(dc: HDC, fr: &Frame) {
         SetBkMode(mem, TRANSPARENT);
         let null_brush = GetStockObject(NULL_BRUSH);
         match &fr.scene {
-            Scene::Arrow { tail, base, tip, ring, ring_col, label } => {
+            Scene::Arrow { tail, base, tip, ring, round, ring_col, label } => {
                 // arrowhead triangle: tip, and two corners either side of `base`
                 let (vx, vy) = ((tip.0 - base.0) as f64, (tip.1 - base.1) as f64);
                 let len = (vx * vx + vy * vy).sqrt().max(1.0);
@@ -507,7 +524,11 @@ unsafe fn paint(dc: HDC, fr: &Frame) {
                     _ = DeleteObject(br.into());
                 }
                 with(mem, pen(*ring_col, if *ring_col == GREEN { 6 } else { 4 }), null_brush, || {
-                    _ = Ellipse(mem, ring.0 - ring.2, ring.1 - ring.2, ring.0 + ring.2, ring.1 + ring.2);
+                    if *round {
+                        _ = Ellipse(mem, ring.0, ring.1, ring.2, ring.3);
+                    } else {
+                        _ = RoundRect(mem, ring.0, ring.1, ring.2, ring.3, 16, 16);
+                    }
                 });
                 if let Some((r, text)) = label {
                     let br = CreateSolidBrush(COLORREF(PANEL));
