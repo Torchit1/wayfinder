@@ -4,11 +4,14 @@
 //! target while it's far away, a spinner while the agent works. Eyes are where the mouse is.
 //! Click on confirm: while an arrow is up, F9 (the person's own key press, never the API) moves the
 //! mouse to the target and clicks it, right-clicking when the step needs it; Shift+F9 right-clicks.
+//! Agent clicks: off at every start; only the tray menu switches them on, there is no API for that.
+//! A click is armed by a local /click, shown amber for COUNTDOWN, and Esc stops it and switches off.
 
 use crate::index::Index;
 use crate::win::{self, Rect};
 use std::cell::RefCell;
 use std::f64::consts::SQRT_2;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::*;
@@ -27,14 +30,20 @@ const WHITE: u32 = 0xffffff;
 const PANEL: u32 = 0x1e1e1e;
 const HIT_R: f64 = 45.0;
 const FLASH: Duration = Duration::from_millis(500);
-const BUSY_STALE: Duration = Duration::from_secs(120);
-pub const BUSY_MSG: &str = "Claude is working out the next step";
+pub const COUNTDOWN: Duration = Duration::from_millis(1500);
+/// Wayfinder can't see whether the agent is really working, so the badge always expires: a short
+/// grace period after a click, longer when the agent says so (`busy`, which it can renew).
+const AFTER_CLICK: Duration = Duration::from_secs(8);
+pub const BUSY_FOR: Duration = Duration::from_secs(60);
+const AFTER_CLICK_MSG: &str = "Waiting for Claude";
+pub const BUSY_MSG: &str = "Claude is working";
 
 pub enum Mode {
     Hidden,
     /// `rect`: the control's own bounds when known (found by name): outline it instead of a ring
-    Target { x: i32, y: i32, label: String, id: u64, done: Option<Instant>, right: bool, rect: Option<Rect> },
-    Busy { msg: String, since: Instant },
+    /// `armed`: an agent click fires at this time unless Esc stops it
+    Target { x: i32, y: i32, label: String, id: u64, done: Option<Instant>, right: bool, rect: Option<Rect>, armed: Option<Instant> },
+    Busy { msg: String, until: Instant },
 }
 
 pub struct Hit {
@@ -48,11 +57,13 @@ pub struct Shared {
     pub hit: Mutex<Option<Hit>>,
     pub hit_cv: Condvar,
     pub next_id: Mutex<u64>,
+    /// tray switch: may the agent click? Never set from the API.
+    pub auto: AtomicBool,
 }
 
 impl Shared {
     pub fn new() -> Self {
-        Shared { mode: Mutex::new(Mode::Hidden), hit: Mutex::new(None), hit_cv: Condvar::new(), next_id: Mutex::new(0) }
+        Shared { mode: Mutex::new(Mode::Hidden), hit: Mutex::new(None), hit_cv: Condvar::new(), next_id: Mutex::new(0), auto: AtomicBool::new(false) }
     }
 
     pub fn set_target(&self, x: i32, y: i32, label: &str, right: bool, rect: Option<Rect>) -> u64 {
@@ -62,8 +73,16 @@ impl Shared {
             *n
         };
         *self.hit.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        *self.mode.lock().unwrap_or_else(|e| e.into_inner()) = Mode::Target { x, y, label: label.into(), id, done: None, right, rect };
+        *self.mode.lock().unwrap_or_else(|e| e.into_inner()) = Mode::Target { x, y, label: label.into(), id, done: None, right, rect, armed: None };
         id
+    }
+
+    /// Start the countdown on the current target. False if there's no target waiting.
+    pub fn arm(&self) -> bool {
+        let mut m = self.mode.lock().unwrap_or_else(|e| e.into_inner());
+        let Mode::Target { armed, done: None, .. } = &mut *m else { return false };
+        *armed = Some(Instant::now() + COUNTDOWN);
+        true
     }
 
     /// Block until the current target is clicked, or timeout.
@@ -231,6 +250,28 @@ fn click_target(shared: &Shared, index: &Index, force_right: bool) {
 
 impl Tick {
     fn tick(&mut self, wins: [HWND; 2], shared: &Shared, index: &Index) {
+        // an armed agent click: polled, not a hotkey, so the stop key can't fail to register
+        let fire = {
+            let mut m = shared.mode.lock().unwrap_or_else(|e| e.into_inner());
+            let mut fire = false;
+            if let Mode::Target { armed, done: None, .. } = &mut *m {
+                if let Some(at) = *armed {
+                    if unsafe { GetAsyncKeyState(0x1B) } as u16 & 0x8000 != 0 {
+                        shared.auto.store(false, Ordering::Relaxed);
+                    }
+                    if !shared.auto.load(Ordering::Relaxed) {
+                        *armed = None;
+                    } else if Instant::now() >= at {
+                        *armed = None;
+                        fire = true;
+                    }
+                }
+            }
+            fire
+        };
+        if fire {
+            click_target(shared, index, false);
+        }
         // clicks: feed the route learner, and detect a hit on the target ring
         for (i, (vk, button)) in [(0x01, "left"), (0x02, "right")].into_iter().enumerate() {
             let down = unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000 != 0;
@@ -258,8 +299,11 @@ impl Tick {
             let mut m = shared.mode.lock().unwrap_or_else(|e| e.into_inner());
             if let Mode::Target { done: Some(t), .. } = &*m {
                 if t.elapsed() > FLASH {
-                    *m = Mode::Busy { msg: BUSY_MSG.into(), since: Instant::now() };
+                    *m = Mode::Busy { msg: AFTER_CLICK_MSG.into(), until: Instant::now() + AFTER_CLICK };
                 }
+            }
+            if matches!(&*m, Mode::Busy { until, .. } if Instant::now() >= *until) {
+                *m = Mode::Hidden;
             }
             let want_keys = matches!(&*m, Mode::Target { done: None, .. });
             if want_keys != self.keys {
@@ -275,9 +319,11 @@ impl Tick {
                 }
             }
             let tip = match &*m {
+                Mode::Hidden if shared.auto.load(Ordering::Relaxed) => "Wayfinder: ready - Claude can click",
                 Mode::Hidden => READY,
+                Mode::Target { armed: Some(_), .. } => "Wayfinder: Claude is about to click - Esc stops it",
                 Mode::Target { .. } => "Wayfinder: pointing - click inside the ring, or press F9",
-                Mode::Busy { .. } => "Wayfinder: Claude is working out the next step",
+                Mode::Busy { .. } => "Wayfinder: waiting for Claude",
             };
             if tip != self.tip {
                 self.tip = tip;
@@ -322,9 +368,9 @@ fn buddy_layout(m: &Mode) -> Option<Frame> {
             }
             Scene::Compass { dir: (dx / d, dy / d) }
         }
-        Mode::Busy { since, .. } => {
+        Mode::Busy { .. } => {
             let t = START.get_or_init(Instant::now).elapsed().as_millis() as usize;
-            Scene::Spinner { col: if since.elapsed() > BUSY_STALE { AMBER } else { GREEN }, lit: t / 90 % 8 }
+            Scene::Spinner { col: GREEN, lit: t / 90 % 8 }
         }
         _ => return None,
     };
@@ -334,8 +380,8 @@ fn buddy_layout(m: &Mode) -> Option<Frame> {
 fn layout(m: &Mode) -> Option<Frame> {
     match m {
         Mode::Hidden => None,
-        Mode::Target { x, y, label, done, right, rect, .. } => Some(arrow_layout(*x, *y, label, done.is_some(), *right, *rect)),
-        Mode::Busy { msg, since } => Some(badge_layout(msg, since.elapsed() > BUSY_STALE)),
+        Mode::Target { x, y, label, done, right, rect, armed, .. } => Some(arrow_layout(*x, *y, label, done.is_some(), *right, *rect, armed.is_some())),
+        Mode::Busy { msg, .. } => Some(badge_layout(msg)),
     }
 }
 
@@ -354,8 +400,12 @@ fn measure(text: &str, font_idx: usize, width: i32) -> (i32, i32) {
     }
 }
 
-fn arrow_layout(tx: i32, ty: i32, label: &str, done: bool, right: bool, rect: Option<Rect>) -> Frame {
-    let hint = if right { "Press F9 to right-click" } else { "Press F9 to click" };
+fn arrow_layout(tx: i32, ty: i32, label: &str, done: bool, right: bool, rect: Option<Rect>, armed: bool) -> Frame {
+    let hint = match (armed, right) {
+        (true, _) => "Claude is clicking this: press Esc to stop",
+        (_, true) => "Press F9 to right-click",
+        _ => "Press F9 to click",
+    };
     let label = &if label.is_empty() { hint.to_string() } else { format!("{label}\n{hint}") };
     let (_, (ml, mt, mr, mb)) = win::monitor_at(tx, ty);
     // tail comes from whichever side of the monitor has more room
@@ -399,16 +449,15 @@ fn arrow_layout(tx: i32, ty: i32, label: &str, done: bool, right: bool, rect: Op
             tip: rel(tip),
             ring: (ring.0 - o.0, ring.1 - o.1, ring.2 - o.0, ring.3 - o.1),
             round,
-            ring_col: if done { GREEN } else { RED },
+            ring_col: if done { GREEN } else if armed { AMBER } else { RED },
             label: label.map(|(r, s)| (RECT { left: r.left - o.0, top: r.top - o.1, right: r.right - o.0, bottom: r.bottom - o.1 }, s)),
         },
     }
 }
 
-fn badge_layout(msg: &str, stale: bool) -> Frame {
+fn badge_layout(msg: &str) -> Frame {
     let (cx, cy) = win::cursor();
     let (_, (ml, _, mr, mb)) = win::monitor_at(cx, cy);
-    let msg = if stale { "Waiting on Claude: check the chat" } else { msg };
     let (w, h) = measure(&format!("{msg}..."), 1, 2000);
     let (pw, ph) = (w + 46 + 16, h + 20);
     let origin = ((ml + mr) / 2 - pw / 2, mb - 30 - ph);
@@ -422,7 +471,7 @@ fn badge_layout(msg: &str, stale: bool) -> Frame {
             panel: RECT { left: 0, top: 0, right: pw, bottom: ph },
             text: RECT { left: 46, top: 10, right: pw - 8, bottom: ph - 10 },
             msg: format!("{msg}{dots}"),
-            col: if stale { AMBER } else { GREEN },
+            col: GREEN,
             dot: dot_on.then_some(RECT { left: 14, top: ph / 2 - 7, right: 28, bottom: ph / 2 + 7 }),
         },
     }
@@ -452,6 +501,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         if msg == WM_TRAY && matches!(lp.0 as u32 & 0xffff, WM_RBUTTONUP | WM_LBUTTONUP) {
             let menu = CreatePopupMenu().unwrap_or_default();
+            let on = SHARED.get().is_some_and(|s| s.auto.load(Ordering::Relaxed));
+            _ = AppendMenuW(menu, if on { MF_STRING | MF_CHECKED } else { MF_STRING }, 3, w!("Let Claude click"));
             _ = AppendMenuW(menu, MF_STRING, 1, w!("Hide arrow"));
             _ = AppendMenuW(menu, MF_STRING, 2, w!("Quit Wayfinder"));
             let (x, y) = win::cursor();
@@ -461,6 +512,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if let Some(shared) = SHARED.get() {
                 if cmd == 1 {
                     *shared.mode.lock().unwrap_or_else(|e| e.into_inner()) = Mode::Hidden;
+                }
+                if cmd == 3 {
+                    shared.auto.store(!on, Ordering::Relaxed);
                 }
             }
             if cmd == 2 {

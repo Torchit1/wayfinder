@@ -26,6 +26,8 @@ const USAGE: &str = "wayfinder: point at things on screen for a person to click 
   wayfinder point X Y [\"label\"] [--raw] [--right] [--remember \"name\"]  arrow at X,Y in the last shot's pixels;
                                     --remember: learn this spot so `at \"name\"` finds it next time
   wayfinder wait [seconds]            block until the person clicks inside the ring (exit 0) or timeout (1)
+  wayfinder click                   click the current arrow after a 1.5 s countdown (Esc stops it), only
+                                    while the tray option 'Let Claude click' is on
   wayfinder busy [\"message\"]          'working out the next step' badge
   wayfinder clip \"text\"               put text on the clipboard so they can right-click > Paste
   wayfinder off | quit | health
@@ -134,7 +136,8 @@ impl Server {
         match (r.method.as_str(), r.path.as_str()) {
             ("GET", "/health") => {
                 let (w, i, l) = self.index.stats();
-                Response::json(200, format!(r#"{{"ok":true,"windows":{w},"items":{i},"learned":{l}}}"#))
+                let auto = self.shared.auto.load(std::sync::atomic::Ordering::Relaxed);
+                Response::json(200, format!(r#"{{"ok":true,"windows":{w},"items":{i},"learned":{l},"can_click":{auto}}}"#))
             }
             ("GET", "/find") => {
                 let qy = http::query_param(&r.query, "q").unwrap_or_default();
@@ -198,10 +201,23 @@ impl Server {
                     None => Response::json(200, r#"{"hit":false}"#.into()),
                 }
             }
+            ("POST", "/click") => {
+                // token and allow-list were checked above; the tray switch is the master control
+                if !self.shared.auto.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Response::json(403, r#"{"error":"clicking is switched off: tray icon > Let Claude click"}"#.into());
+                }
+                if !self.shared.arm() {
+                    return Response::json(409, r#"{"error":"no arrow is waiting: point at something first"}"#.into());
+                }
+                match self.shared.wait_hit(overlay::COUNTDOWN + Duration::from_secs(1)) {
+                    Some((x, y)) => Response::json(200, format!(r#"{{"clicked":true,"x":{x},"y":{y}}}"#)),
+                    None => Response::json(200, r#"{"clicked":false,"reason":"stopped"}"#.into()),
+                }
+            }
             ("POST", "/busy") => {
                 let msg = s("msg");
                 let msg = if msg.is_empty() { overlay::BUSY_MSG.to_string() } else { msg };
-                *self.shared.mode.lock().unwrap_or_else(|e| e.into_inner()) = Mode::Busy { msg, since: Instant::now() };
+                *self.shared.mode.lock().unwrap_or_else(|e| e.into_inner()) = Mode::Busy { msg, until: Instant::now() + overlay::BUSY_FOR };
                 ok()
             }
             ("POST", "/clip") => {
@@ -317,6 +333,7 @@ fn client(cmd: &str, args: &[String]) -> i32 {
         }
         "busy" => call("POST", "/busy", &format!(r#"{{"msg":{}}}"#, q(arg(0))), 5),
         "clip" => call("POST", "/clip", &format!(r#"{{"text":{}}}"#, q(arg(0))), 5),
+        "click" => call("POST", "/click", "", 10),
         "off" => call("POST", "/off", "", 5),
         "quit" => call("POST", "/quit", "", 5),
         "shot" => {
@@ -381,7 +398,7 @@ fn report(res: std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)>) -> i32 {
         Ok((status, _, body)) => {
             let text = String::from_utf8_lossy(&body);
             println!("{text}");
-            if status != 200 || text.contains(r#""hit":false"#) { 1 } else { 0 }
+            if status != 200 || text.contains(r#""hit":false"#) || text.contains(r#""clicked":false"#) { 1 } else { 0 }
         }
         Err(e) => {
             eprintln!("wayfinder server not reachable on 127.0.0.1:{} ({e}). Start it: wayfinder serve", port());

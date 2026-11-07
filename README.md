@@ -11,10 +11,11 @@ It was built as an **accessibility tool**: for people who find screens hard to n
 - **Single `.exe` under 256 KB**, with a tray icon (right-click: hide arrow / quit), no runtime, no dependencies beyond Windows itself.
 - **Outlines the actual control.** When a control is found by name, a pulsing red outline hugs its exact edges (clicking anywhere inside counts); spots without known edges get a ring.
 - **Finds controls by name, not by screenshot.** It reads the same accessibility tree screen readers use (UI Automation), so it works on sites and apps that block screen capture. Lookups take well under a millisecond from a live in-memory index.
-- **Only clicks when you say so.** It draws, watches for your click inside the ring, and can put text on your clipboard so you can right-click → Paste instead of typing. If clicking is hard, press **F9** while an arrow is up and it clicks the target for you (right-clicks when the step needs it; **Shift+F9** always right-clicks). F9 only works while an arrow is showing, and nothing else (not the agent, not the API) can make it click.
+- **Optional agent clicks.** Tray icon > *Let Claude click* (off at every start) lets the agent click the current arrow with `wayfinder click`: the arrow turns amber for 1.5 seconds and **Esc** stops it and switches the option off. Only the tray can turn it on; the API can't.
+- **Only clicks when you say so.** It draws, watches for your click inside the ring, and can put text on your clipboard so you can right-click → Paste instead of typing. If clicking is hard, press **F9** while an arrow is up and it clicks the target for you (right-clicks when the step needs it; **Shift+F9** always right-clicks). F9 only works while an arrow is showing, and the agent can't use it for you.
 - **Learns how to reach hidden things.** When a click opens a menu, it remembers that the menu's items are reached through that click. Next time it points at the first step. If a route stops working (an app changed), it notices and forgets it.
 - **Remembers spots it can't see.** When the agent points at something from a screenshot, `--remember "name"` saves it relative to the nearest named control, so `at "name"` finds it instantly next time, even after the window moves, resizes or reflows.
-- **A cursor buddy.** A small badge rides next to your mouse pointer, where your eyes already are: a compass needle towards the arrow while it's far away, and a spinner while the agent works out the next step (amber after 2 minutes: check the chat).
+- **A cursor buddy.** A small badge rides next to your mouse pointer, where your eyes already are: a compass needle towards the arrow while it's far away, and a spinner while waiting on the agent, which expires by itself.
 - **Multi-monitor aware.** It prefers the copy of a control on the screen your mouse is on.
 - **Screenshot fallback** for things with no accessibility info (canvases, games, video): the agent takes a shot, reads it, and points by coordinates.
 
@@ -34,7 +35,8 @@ wayfinder wait 600                    # blocks until you click inside the ring (
 | `wayfinder shot [file.png] [--width N]` | Screenshot of the whole desktop with the mouse marked; prints which monitor the mouse is on. |
 | `wayfinder point X Y ["label"] [--raw] [--remember "name"]` | Arrow at X,Y in the last shot's pixels (`--raw`: real screen pixels). `--remember` saves the spot so `at "name"` finds it next time. |
 | `wayfinder wait [seconds]` | Wait for the person to click inside the ring. |
-| `wayfinder busy ["message"]` | Show the "working out the next step" badge (also shown automatically after each click). |
+| `wayfinder click` | Click the current arrow after a 1.5 s countdown (Esc stops it). Refused unless the tray option *Let Claude click* is on. |
+| `wayfinder busy ["message"]` | Show a "Claude is working" badge for 60 seconds; run it again to renew. After each click a short "Waiting for Claude" shows for 8 seconds. The badge always expires, so it never claims work that has stopped. |
 | `wayfinder clip "text"` | Put text on the clipboard (write-only; it never reads it). |
 | `wayfinder off` / `quit` / `health` | Hide the arrow / stop the server / status. |
 
@@ -50,7 +52,7 @@ Task Scheduler → Create Task → *At log on*, action `wayfinder.exe serve`, *R
 
 `wayfinder serve --lan --allow 192.168.1.50` also listens on your network, but only answers the listed IPs, and every request needs the token in `token.txt` next to `wayfinder.exe`. [`clients/wayfinder.sh`](clients/wayfinder.sh) is a curl client for an agent on another machine (`WAYFINDER_HOST`, `WAYFINDER_TOKEN`).
 
-**Security:** anything holding the token can take screenshots of your desktop and put text on your clipboard. Keep it localhost-only unless you need remote access, allow-list exact IPs, and treat the token like a password. The API can't click, type, run programs or read the clipboard.
+**Security:** anything holding the token can take screenshots of your desktop and put text on your clipboard. Keep it localhost-only unless you need remote access, allow-list exact IPs, and treat the token like a password. While *Let Claude click* is on, it can also click whatever an arrow is on, including from allowed remote IPs: leave it off unless you need it, and remember a remote agent that reads untrusted web pages could be talked into a bad click. The API can't switch that option on, type, run programs or read the clipboard.
 
 ## Limits
 

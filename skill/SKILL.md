@@ -13,14 +13,18 @@ Requires `wayfinder serve` running on the user's PC (see README). It is an acces
    - Finds buttons, links, menu items, list rows, tabs and fields by visible name, web page content included. Prefers the copy on the monitor the mouse is on.
    - If it's hidden but a route was learned, it points at the first step instead. The JSON has `"button": "right"` when that step is a right-click; say so in the label.
    - Not sure of the name? `wayfinder find "part of name"` lists candidates. Try a few likely words.
-2. **Wait for the click, in the background** (it can take minutes): `wayfinder wait 600`. Exit 0 = clicked inside the ring. The overlay then shows "working out the next step..." automatically.
+2. **Wait for the click, in the background** (it can take minutes): `wayfinder wait 600`. Exit 0 = clicked inside the ring. The overlay then shows "Waiting for Claude" for 8 seconds. If your next step takes longer, run `wayfinder busy`, which lasts 60 seconds; renew it only while you really are working.
 3. Point at the next step. Repeat. `wayfinder off` when finished.
 4. **Fallback when `at`/`find` can't see it** (canvases, games, video, custom-drawn UIs): `wayfinder shot shot.png`, read the image, then `wayfinder point X Y "label"` in that image's pixels. The shot marks the mouse with a magenta crosshair and reports which monitor it's on. Add `--remember "name"` so next time `wayfinder at "name"` finds it with no screenshot (the JSON says `"remembered":true`).
+
+## Clicking for them
+
+`wayfinder click` clicks the current arrow after a 1.5 s countdown, only if they turned on tray icon > *Let Claude click* (403 otherwise: ask them, you can't switch it on). Esc stops it and switches it off; respect that. Only click when they asked you to, and get a clear yes in chat before anything that sends, deletes, publishes, buys or can't be undone.
 
 ## Rules
 
 - If clicking is hard for them: every arrow's label says "Press F9 to click". F9 is their key press, not yours; you can't click. Mark right-click steps with `--right` (learned routes do it automatically) so F9 right-clicks.
 - Never make them type: `wayfinder clip "text"`, then point at the box with "Right-click here -> Paste".
 - Keep labels short ("Step 3: click Safety Filters") and say the same step in chat.
-- When they're waiting on you and no arrow is up, run `wayfinder busy` so they know you're working even if your window is covered.
+- When they're waiting on you and no arrow is up, run `wayfinder busy` so they know you're working even if your window is covered. Never leave it claiming work you aren't doing.
 - You can't draw over the Start menu, the search panel or the admin (UAC) prompt. Give those steps in words. `shot` fails while a UAC prompt is up; that's what it means.
